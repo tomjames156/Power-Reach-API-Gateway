@@ -6,7 +6,7 @@ import asyncio
 import logging
 
 logger = logging.getLogger("gateway.ws")
-router = APIRouter()
+router = APIRouter(tags=["websocket"])
 
 
 def decode_ws_token(token: str) -> dict:
@@ -48,7 +48,7 @@ async def websocket_proxy(
     # Build the upstream URL with the same path and query params
     # but without the token — the messaging service gets identity via headers
     upstream_url = (
-        f"ws://localhost:8002/{path}"
+        f"{settings.messaging_service_ws_url}/{path}"
     )
 
     logger.info(f"WS proxy: {user_id} ({user_role}) → /ws/{path}")

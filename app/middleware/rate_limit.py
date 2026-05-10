@@ -2,9 +2,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 import redis.asyncio as aioredis
-import time
+from app.config import settings
 
-redis = aioredis.from_url("redis://localhost:6379", decode_responses=True)
+redis = aioredis.from_url(settings.redis_url, decode_responses=True)
 
 RATE_LIMIT    = 60   # requests
 WINDOW_SECS   = 60   # per minute

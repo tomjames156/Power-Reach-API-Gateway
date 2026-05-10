@@ -8,7 +8,7 @@ from uuid import UUID
 import asyncio
 import httpx
 
-router = APIRouter()
+router = APIRouter(tags=['reporting'])
 
 async def get_display_id(token):
     auth_client = pools["auth"]
@@ -149,6 +149,99 @@ async def get_engineers_assigned_reports_with_customers(request: Request):
         "reports": enriched_reports
     }
 
+@router.get("/customers")
+async def get_customers_reports(request: Request):
+
+    token = request.headers.get("Authorization")
+    customer_id = await get_display_id(token)
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing Token")
+
+    try:
+        # Strip "Bearer " prefix if present
+        actual_token = token.split(" ")[1] if " " in token else token
+        payload = jwt.decode(actual_token, settings.secret_key, algorithms=[settings.algorithm])
+
+        user_id = str(payload.get("sub"))
+        user_role = payload.get("role", "customer")
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid Token")
+
+        # 2. Build the "Internal" headers your microservices expect
+    internal_headers = {
+        "Authorization": token,
+        "X-User-ID": user_id,
+        "X-User-Role": user_role,
+        "X-Request-ID": request.headers.get("X-Request-ID", "gateway-generated")
+    }
+
+    # 1. Get the internal clients
+    report_client = pools["reporting"]
+    auth_client = pools["auth"]
+
+    # 2. Fetch all base reports
+    report_resp = await report_client.get(f"/reports/customer/{customer_id}",
+                                          headers=internal_headers)
+    if report_resp.status_code != 200:
+        raise HTTPException(status_code=report_resp.status_code, detail="Failed to fetch reports")
+
+    reports_list = report_resp.json()  # Assuming this returns a list of report dicts
+
+    unique_engineer_ids = {r.get("assigned_to") for r in reports_list if r.get("assigned_to")}
+
+    # 4. Fetch all unique engineer profiles in PARALLEL
+    async def fetch_engineer(e_id):
+        resp = await auth_client.get(f"/users/engineers/{e_id}", headers={"Authorization": token})
+        return e_id, resp.json() if resp.status_code == 200 else None
+
+    # Create a list of tasks and run them concurrently
+    tasks = [fetch_engineer(e_id) for e_id in unique_engineer_ids]
+    engineer_results = await asyncio.gather(*tasks)
+
+    # 5. Create a lookup map: {engineer_id: profile_data}
+    engineer_map = {e_id: profile for e_id, profile in engineer_results if profile}
+
+    # 6. Merge the data
+    enriched_reports = []
+    for report in reports_list:
+        e_id = report.get("assigned_to")
+        enriched_reports.append({
+            **report,
+            "engineer": engineer_map.get(e_id)  # Attach profile or None if not found
+        })
+
+    return {
+        "reports": enriched_reports
+    }
+
+    # 2. Fetch all base reports
+    report_resp = await report_client.get(f"/reports/customer/{customer_id}",
+                                          headers=internal_headers)
+    if report_resp.status_code != 200:
+        raise HTTPException(status_code=report_resp.status_code, detail="Failed to fetch reports")
+
+    reports_list = report_resp.json()  # Assuming this returns a list of report dicts
+
+    engineer_data = None
+    if customer_id:
+        auth_resp = await auth_client.get(f"/users/engineers/{customer_id}",
+                                          headers={"Authorization": token})
+        if auth_resp.status_code == 200:
+            customer_data = auth_resp.json()
+
+    # 6. Merge the data
+    enriched_reports = []
+    for report in reports_list:
+        enriched_reports.append({
+            **report,
+            "customer": customer_data  # Attach profile or None if not found
+        })
+
+    return {
+        "reports": enriched_reports
+    }
+
 @router.get("/test")
 async def test_gateway():
     return {"Gate Opened"}
@@ -203,6 +296,58 @@ async def get_report_with_customer(report_id: UUID, request: Request):
     # 4. Merge and return
     return {"message": "Merged report and customer data", "report": report_data, "customer":
         customer_data}
+
+@router.get("/customers/{report_id}")
+async def get_report_with_engineers(report_id: UUID, request: Request):
+    # 0. Get the token from the incoming headers
+    token = request.headers.get("Authorization")
+
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing Token")
+
+        # 1. Decode the token in the Gateway
+    try:
+        # Strip "Bearer " prefix if present
+        actual_token = token.split(" ")[1] if " " in token else token
+        payload = jwt.decode(actual_token, settings.secret_key, algorithms=[settings.algorithm])
+
+        user_id = str(payload.get("sub"))  # Or however you store the ID
+        user_role = payload.get("role", "customer")
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid Token")
+
+        # 2. Build the "Internal" headers your microservices expect
+    internal_headers = {
+        "Authorization": token,
+        "X-User-ID": user_id,
+        "X-User-Role": user_role,
+        "X-Request-ID": request.headers.get("X-Request-ID", "gateway-generated")
+    }
+
+    # 1. Get the internal clients from our pools
+    report_client = pools["reporting"]
+    auth_client = pools["auth"]
+
+
+    # 2. Fetch the base report
+    report_resp = await report_client.get(f"/reports/{report_id}", headers=internal_headers)
+    if report_resp.status_code == 404:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    report_data = report_resp.json()
+    engineer_id = report_data.get("assigned_to")
+
+    # 3. Fetch the engineers profile if an ID exists
+    engineer_data = None
+    if engineer_id:
+        auth_resp = await auth_client.get(f"/users/engineers/{engineer_id}", headers={
+            "Authorization": token})
+        if auth_resp.status_code == 200:
+            engineer_data = auth_resp.json()
+
+    # 4. Merge and return
+    return {"message": "Merged report and engineer data", "report": report_data, "engineer":
+        engineer_data}
 
 @router.api_route(
     "/{path:path}",

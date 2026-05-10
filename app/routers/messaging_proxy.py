@@ -6,7 +6,7 @@ from app.config import settings
 from app.middleware.auth import get_user_payload
 import httpx
 
-router = APIRouter()
+router = APIRouter(tags=["messaging"])
 
 @router.get("/chat_conversation/{conversation_id}")
 async def get_chat_conversation(request: Request, conversation_id: str):

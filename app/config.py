@@ -1,10 +1,16 @@
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
-    auth_service_url:      str = "http://127.0.0.1:8000"
-    reporting_service_url: str = "http://127.0.0.1:8001"
-    messaging_service_url:  str = "http://127.0.0.1:8002"
-    secret_key:            str  # same key as auth service uses to sign JWTs
+    auth_service_url:      str
+    reporting_service_url: str
+    messaging_service_url:  str
+    messaging_service_ws_url: str
+    notification_service_url: str
+    notification_service_ws_url: str
+    staff_frontend_url:      str
+    customer_frontend_url:   str
+    redis_url:               str
+    secret_key:            str
     algorithm:             str = "HS256"
 
     class Config:

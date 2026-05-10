@@ -3,7 +3,7 @@ from fastapi.responses import Response
 from app.dependencies.clients import pools
 import httpx
 
-router = APIRouter()
+router = APIRouter(tags=["authentication"])
 
 @router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 async def proxy_to_auth(path: str, request: Request):

@@ -6,7 +6,7 @@ import httpx
 from app.config import settings
 from app.middleware.logging import RequestLoggingMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
-from app.routers import auth_proxy, reporting_proxy, messaging_proxy, ws_proxy
+from app.routers import auth_proxy, reporting_proxy, messaging_proxy, ws_proxy, notifications_proxy
 from app.dependencies.clients import pools
 
 @asynccontextmanager
@@ -26,6 +26,11 @@ async def lifespan(app: FastAPI):
         limits=httpx.Limits(max_connections=40, max_keepalive_connections=20),
         timeout=httpx.Timeout(connect=3.0, read=20.0, write=10.0, pool=1.0),
     )
+    pools["notifications"] = httpx.AsyncClient(
+    base_url=settings.notification_service_url,
+    limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+    timeout=httpx.Timeout(connect=3.0, read=10.0, write=5.0, pool=1.0),
+    )
     print("Gateway pools open")
     yield
     for client in pools.values():
@@ -39,7 +44,7 @@ app = FastAPI(title="API Gateway", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173", "http://localhost:5174"],
+    allow_origins=[settings.staff_frontend_url, settings.customer_frontend_url],
     allow_methods=["*"],
     allow_headers=["Authorization", "Content-Type"],
 )
@@ -49,4 +54,5 @@ app.add_middleware(RequestLoggingMiddleware)
 app.include_router(auth_proxy.router,      prefix="/api/auth")
 app.include_router(reporting_proxy.router, prefix="/api/reports")
 app.include_router(messaging_proxy.router, prefix="/api/chat")
+app.include_router(notifications_proxy.router, prefix="/api/notifications")
 app.include_router(ws_proxy.router, prefix="/ws")
