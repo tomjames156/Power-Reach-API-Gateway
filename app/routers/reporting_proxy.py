@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Request, Depends, HTTPException
 from fastapi.responses import Response
+from httpx import request
+
 from app.middleware.auth import validate_token, get_user_payload
 from app.dependencies.clients import pools
 from jose import jwt
@@ -56,26 +58,39 @@ async def get_all_reports_with_customers(request: Request):
     # 3. Identify unique customer IDs to avoid redundant API calls
     # We use a set to ensure we only fetch each customer once
     unique_customer_ids = {r.get("customer_id") for r in reports_list if r.get("customer_id")}
+    unique_engineer_ids = {r.get("assigned_to") for r in reports_list if r.get("assigned_to")}
 
     # 4. Fetch all unique customer profiles in PARALLEL
     async def fetch_customer(cid):
         resp = await auth_client.get(f"/users/customers/{cid}", headers={"Authorization": token})
         return cid, resp.json() if resp.status_code == 200 else None
 
-    # Create a list of tasks and run them concurrently
-    tasks = [fetch_customer(cid) for cid in unique_customer_ids]
-    customer_results = await asyncio.gather(*tasks)
+    # 5. Fetch all unique engineer profiles in PARALLEL
+    async def fetch_engineer(eid):
+        resp = await auth_client.get(f"/users/engineers/{eid}",
+                                     headers={"Authorization": token})
+        return eid, resp.json() if resp.status_code == 200 else None
 
-    # 5. Create a lookup map: {customer_id: profile_data}
+    # Create and run tasks concurrently
+    customer_tasks = [fetch_customer(cid) for cid in unique_customer_ids]
+    engineer_tasks = [fetch_engineer(eid) for eid in unique_engineer_ids]
+
+    customer_results = await asyncio.gather(*customer_tasks) if customer_tasks else []
+    engineer_results = await asyncio.gather(*engineer_tasks) if engineer_tasks else []
+
+    # 6. Create lookup maps: {id: profile_data}
     customer_map = {cid: profile for cid, profile in customer_results if profile}
+    engineer_map = {eid: profile for eid, profile in engineer_results if profile}
 
-    # 6. Merge the data
+    # 7. Merge the data
     enriched_reports = []
     for report in reports_list:
         cid = report.get("customer_id")
+        eid = report.get("assigned_to")
         enriched_reports.append({
             **report,
-            "customer": customer_map.get(cid)  # Attach profile or None if not found
+            "customer": customer_map.get(cid),  # Attach customer profile or None
+            "engineer": engineer_map.get(eid)  # Attach engineer profile or None
         })
 
     return {
@@ -355,31 +370,39 @@ async def get_report_with_engineers(report_id: UUID, request: Request):
 )
 async def proxy_to_reporting(
     path: str,
-    request: Request,
+    auth_request: Request,
     user: dict = Depends(get_user_payload),
 ):
     client = pools["reporting"]
+    token = auth_request.headers.get("Authorization").split(" ")[1]
+
+    auth_client = pools['auth']
+    user_data = None
+    resp = await auth_client.get(f"/users/me", headers={"Authorization": f"Bearer {token}"})
+    if resp.status_code == 200:
+        user_data = resp.json()
 
     # Build forwarded headers — pass the original auth header through
     # and inject the validated user_id so the reporting service trusts it
-    headers = dict(request.headers)
+    headers = dict(auth_request.headers)
     headers.pop("host", None)  # never forward the Host header
 
     if user:
         # The reporting service can now trust X-User-ID without calling auth itself
         headers["X-User-ID"]   = user["sub"]
         headers["X-User-Role"] = user.get("role", "")
-        headers["X-Request-ID"] = getattr(request.state, "request_id", "")
+        headers["X-Display-ID"] = user_data["profile"]["display_id"]
+        headers["X-Request-ID"] = getattr(auth_request.state, "request_id", "")
 
-    body = await request.body()
+    body = await auth_request.body()
 
     try:
         resp = await client.request(
-            method=request.method,
+            method=auth_request.method,
             url=f"/{path}",
             headers=headers,
             content=body,
-            params=request.query_params,
+            params=auth_request.query_params,
         )
     except httpx.TimeoutException:
         raise HTTPException(504, "Reporting service timed out")
